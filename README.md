@@ -1,5 +1,5 @@
 ```bash
-bash <(curl -s https://raw.githubusercontent.com/multi81/remnawave-installer/main/install.sh)
+sudo bash <(curl -s https://raw.githubusercontent.com/multi81/remnawave-installer/main/install.sh)
 ```
 # Remnawave Production Installer
 
@@ -57,7 +57,7 @@ ping sub.example.com
 # Quick Install
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/multi81/remnawave-installer/main/install.sh)
+sudo bash <(curl -fsSL https://raw.githubusercontent.com/multi81/remnawave-installer/main/install.sh)
 ```
 
 Installer will ask:

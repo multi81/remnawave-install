@@ -1,5 +1,5 @@
 ```bash
-sudo bash <(curl -s https://raw.githubusercontent.com/multi81/remnawave-install/main/install.sh)
+bash <(curl -s https://raw.githubusercontent.com/multi81/remnawave-install/main/install.sh)
 ```
 # Remnawave Production Installer
 

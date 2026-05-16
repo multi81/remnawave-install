@@ -1,4 +1,4 @@
-git clone bash <(curl -s https://raw.githubusercontent.com/multi81/remnawave-installer/main/install.sh)
+<tab><tab>code/bash <(curl -s https://raw.githubusercontent.com/multi81/remnawave-installer/main/install.sh)
 
 🔥 Что получится
 

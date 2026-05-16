@@ -2,7 +2,7 @@
 set -euo pipefail
 
 echo "====================================="
-echo " Remnawave SaaS Installer"
+echo " Remnawave SaaS Installer (STABLE v4)"
 echo "====================================="
 
 read -rp "Panel domain: " PANEL_DOMAIN
@@ -11,38 +11,57 @@ read -rp "Admin email: " ADMIN_EMAIL
 
 APP_DIR="/opt/remnawave"
 
-rm -rf $APP_DIR
-mkdir -p $APP_DIR
-cd $APP_DIR
+rm -rf "$APP_DIR"
+mkdir -p "$APP_DIR"
+cd "$APP_DIR"
 
-### SYSTEM
+# =========================
+# SYSTEM
+# =========================
 apt update -y
 apt install -y curl wget git jq openssl ufw ca-certificates
 
-### DOCKER
+# =========================
+# DOCKER
+# =========================
 curl -fsSL https://get.docker.com | sh
 systemctl enable docker
+systemctl start docker
 
 mkdir -p /usr/local/lib/docker/cli-plugins
 curl -SL https://github.com/docker/compose/releases/download/v2.27.0/docker-compose-linux-x86_64 \
  -o /usr/local/lib/docker/cli-plugins/docker-compose
 chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 
-### CADDY
+# =========================
+# CADDY
+# =========================
 apt install -y caddy
 
-### FIREWALL
+# =========================
+# FIREWALL
+# =========================
 ufw allow 22
 ufw allow 80
 ufw allow 443
 ufw --force enable
 
-### SECRETS
+# =========================
+# SECRETS
+# =========================
 POSTGRES_PASSWORD=$(openssl rand -hex 32)
 JWT_SECRET=$(openssl rand -hex 32)
 SESSION_SECRET=$(openssl rand -hex 32)
 
-### ENV
+# =========================
+# DOCKER NETWORK (FIXED)
+# =========================
+docker network rm remnawave-network 2>/dev/null || true
+docker network create remnawave-network
+
+# =========================
+# ENV (FIXED DATABASE)
+# =========================
 cat > .env <<EOF
 NODE_ENV=production
 
@@ -56,13 +75,12 @@ APP_URL=https://${PANEL_DOMAIN}
 SUB_PUBLIC_DOMAIN=https://${SUB_DOMAIN}
 EOF
 
-### NETWORK FIX
-docker network rm remnawave-network 2>/dev/null || true
-docker network create remnawave-network
-
-### COMPOSE
+# =========================
+# DOCKER COMPOSE (FIXED ORDER)
+# =========================
 cat > docker-compose.yml <<EOF
 services:
+
   db:
     image: postgres:17
     restart: unless-stopped
@@ -107,22 +125,35 @@ volumes:
 
 networks:
   remnawave-network:
-    external: true
+    driver: bridge
 EOF
 
-### START STACK
-docker compose up -d
+# =========================
+# START DB FIRST (CRITICAL FIX)
+# =========================
+docker compose up -d db redis
 
-### WAIT BACKEND
-echo "Waiting backend..."
-for i in {1..30}; do
+echo "[+] Waiting DB..."
+sleep 10
+
+# =========================
+# START BACKEND
+# =========================
+docker compose up -d backend sub
+
+echo "[+] Waiting backend..."
+
+for i in {1..40}; do
   if curl -fs http://127.0.0.1:3000 >/dev/null 2>&1; then
+    echo "[OK] Backend is UP"
     break
   fi
   sleep 2
 done
 
-### CADDY
+# =========================
+# CADDY (SAFE)
+# =========================
 cat > /etc/caddy/Caddyfile <<EOF
 {
   email ${ADMIN_EMAIL}
@@ -139,5 +170,13 @@ EOF
 
 systemctl restart caddy
 
-echo "DONE"
-echo "https://${PANEL_DOMAIN}"
+# =========================
+# DONE
+# =========================
+echo ""
+echo "====================================="
+echo " INSTALL COMPLETE"
+echo "====================================="
+echo "Panel: https://${PANEL_DOMAIN}"
+echo "Sub:   https://${SUB_DOMAIN}"
+echo "====================================="

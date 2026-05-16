@@ -1,5 +1,6 @@
-<tab><tab>code/bash <(curl -s https://raw.githubusercontent.com/multi81/remnawave-installer/main/install.sh)
-
+```bash
+bash <(curl -s https://raw.githubusercontent.com/multi81/remnawave-installer/main/install.sh)
+```
 🔥 Что получится
 
 Скрипт спросит:

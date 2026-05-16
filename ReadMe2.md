@@ -1,4 +1,6 @@
+```bash
 bash <(curl -s https://raw.githubusercontent.com/multi81/remnawave-install/master/install2.sh)
+```
 
 # Remnawave Production Installer
 

@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
+
+export DEBIAN_FRONTEND=noninteractive
 
 clear
 
 echo "========================================="
-echo "   Remnawave STABLE Installer v2"
+echo "   REMNAWAVE SaaS INSTALLER (CLEAN)"
 echo "========================================="
 
 read -p "Panel domain: " PANEL_DOMAIN
@@ -15,35 +17,29 @@ SERVER_IP=$(curl -4 -s ifconfig.me)
 
 echo ""
 echo "Server IP: $SERVER_IP"
+
+############################################
+# NO HARD DNS BLOCK (ONLY WARNING)
+############################################
+
 echo ""
+echo "Checking DNS (non-blocking)..."
+
+PANEL_IP=$(dig +short "$PANEL_DOMAIN" | tail -n1 || true)
+SUB_IP=$(dig +short "$SUB_DOMAIN" | tail -n1 || true)
+
+echo "$PANEL_DOMAIN -> ${PANEL_IP:-NOT SET}"
+echo "$SUB_DOMAIN -> ${SUB_IP:-NOT SET}"
 
 ############################################
-# DNS (НЕ БЛОКИРУЕМ УСТАНОВКУ)
-############################################
-
-PANEL_IP=$(dig +short $PANEL_DOMAIN | tail -n1 || true)
-SUB_IP=$(dig +short $SUB_DOMAIN | tail -n1 || true)
-
-echo "DNS CHECK (non-blocking)"
-echo "$PANEL_DOMAIN -> $PANEL_IP"
-echo "$SUB_DOMAIN -> $SUB_IP"
-
-if [[ "$PANEL_IP" != "$SERVER_IP" || "$SUB_IP" != "$SERVER_IP" ]]; then
-  echo ""
-  echo "⚠️ WARNING: DNS not ready yet"
-  echo "Install will continue anyway"
-  echo ""
-fi
-
-############################################
-# SYSTEM
+# SYSTEM BASE
 ############################################
 
 apt update -y
-apt install -y curl wget git unzip jq openssl ufw dnsutils
+apt install -y curl wget git unzip jq openssl ca-certificates dnsutils ufw
 
 ############################################
-# DOCKER
+# DOCKER (SAFE)
 ############################################
 
 if ! command -v docker >/dev/null 2>&1; then
@@ -52,6 +48,10 @@ fi
 
 systemctl enable docker
 systemctl start docker
+
+############################################
+# COMPOSE
+############################################
 
 mkdir -p /root/.docker/cli-plugins
 
@@ -82,21 +82,25 @@ fi
 # FIREWALL
 ############################################
 
-ufw allow 22 || true
-ufw allow 80 || true
-ufw allow 443 || true
+ufw allow 22
+ufw allow 80
+ufw allow 443
 ufw --force enable
 
 ############################################
-# CLEAN INSTALL
+# CLEAN INSTALL DIR
 ############################################
 
 rm -rf /opt/remnawave
 mkdir -p /opt/remnawave
 cd /opt/remnawave
 
-docker network rm remnawave-network 2>/dev/null || true
-docker network create remnawave-network
+############################################
+# NETWORK
+############################################
+
+docker network rm remnawave-net 2>/dev/null || true
+docker network create remnawave-net
 
 ############################################
 # SECRETS
@@ -107,27 +111,27 @@ JWT_SECRET=$(openssl rand -hex 64)
 SESSION_SECRET=$(openssl rand -hex 64)
 
 ############################################
-# ENV (ВАЖНО: FIX PRISMA)
+# ENV (FIXED FOR PRISMA)
 ############################################
 
 cat > .env <<EOF
 NODE_ENV=production
 
-APP_PORT=3000
-SUBSCRIPTION_PORT=3010
-
 DATABASE_URL=postgresql://remnawave:${POSTGRES_PASSWORD}@postgres:5432/remnawave
+
+APP_PORT=3000
+SUB_PORT=3010
 
 JWT_AUTH_SECRET=${JWT_SECRET}
 JWT_REFRESH_SECRET=${JWT_SECRET}
 SESSION_SECRET=${SESSION_SECRET}
 
 APP_URL=https://${PANEL_DOMAIN}
-SUB_PUBLIC_DOMAIN=https://${SUB_DOMAIN}
+SUB_URL=https://${SUB_DOMAIN}
 EOF
 
 ############################################
-# DOCKER COMPOSE (FIXED HEALTH + NO RACE)
+# DOCKER COMPOSE (STABLE)
 ############################################
 
 cat > docker-compose.yml <<EOF
@@ -144,11 +148,6 @@ services:
       - pg:/var/lib/postgresql/data
     networks:
       - net
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U remnawave"]
-      interval: 5s
-      timeout: 5s
-      retries: 20
 
   redis:
     image: valkey/valkey:9-alpine
@@ -165,10 +164,8 @@ services:
     env_file:
       - .env
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_started
+      - postgres
+      - redis
     ports:
       - "127.0.0.1:3000:3000"
     networks:
@@ -196,7 +193,7 @@ networks:
 EOF
 
 ############################################
-# CADDY (FIXED)
+# CADDY
 ############################################
 
 cat > /etc/caddy/Caddyfile <<EOF
@@ -216,23 +213,23 @@ EOF
 systemctl restart caddy
 
 ############################################
-# START STACK
+# START
 ############################################
 
 docker compose up -d
 
 ############################################
-# WAIT BACKEND HEALTH (IMPORTANT FIX)
+# HEALTH CHECK (IMPORTANT FIX)
 ############################################
 
-echo "Waiting backend..."
+echo "Waiting backend health..."
 
 for i in {1..60}; do
   if curl -s http://127.0.0.1:3000 >/dev/null; then
     echo "Backend OK"
     break
   fi
-  sleep 2
+  sleep 3
 done
 
 ############################################
@@ -247,5 +244,5 @@ echo ""
 echo "Panel: https://${PANEL_DOMAIN}"
 echo "Sub:   https://${SUB_DOMAIN}"
 echo ""
-echo "Check logs:"
+echo "Logs:"
 echo "docker logs -f remnawave-backend"

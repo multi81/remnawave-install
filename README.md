@@ -1,9 +1,5 @@
 bash <(curl -s https://raw.githubusercontent.com/multi81/remnawave-installer/main/install.sh)
 
-На НОВОМ сервере:
-
-bash <(curl -s https://raw.githubusercontent.com/USERNAME/remnawave-installer/main/install.sh)
-
 🔥 Что получится
 
 Скрипт спросит:

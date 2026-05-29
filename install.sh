@@ -1,188 +1,140 @@
-#!/bin/bash
-set -e
-
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[1;34m'; CYAN='\033[0;36m'; NC='\033[0m'
-[[ $EUID -ne 0 ]] && echo -e "${RED}Запустите от root${NC}" && exit 1
-
-echo -e "${BLUE}"
-echo "╔══════════════════════════════════════╗"
-echo "║     Remnawave Auto Installer v2     ║"
-echo "╚══════════════════════════════════════╝"
-echo -e "${NC}"
-
-# --- Сбор параметров (аналогично предыдущей версии, сокращаю для brevity) ---
-echo -ne "${YELLOW}[1/8] Домен панели: ${NC}"; read PANEL_DOMAIN
-echo -ne "${YELLOW}[2/8] Домен подписки: ${NC}"; read SUB_DOMAIN
-echo -e "${YELLOW}[3/8] Установить ноду?${NC}"
-echo "  1) Да"
-echo "  2) Нет"
-read -p "Выбор [1-2]: " NODE_CHOICE
-INSTALL_NODE=false
-if [[ "$NODE_CHOICE" == "1" ]]; then
-    INSTALL_NODE=true
-    echo -ne "${YELLOW}[3.1] Адрес ноды: ${NC}"; read NODE_ADDRESS
-fi
-echo -e "${YELLOW}[4/8] Прокси:${NC}"
-echo "  1) Caddy (рекомендуется)"
-echo "  2) Nginx"
-read -p "Выбор [1-2]: " PROXY_CHOICE
-PROXY="caddy"; [[ "$PROXY_CHOICE" == "2" ]] && PROXY="nginx"
-echo -ne "${YELLOW}[5/8] Email для SSL: ${NC}"; read EMAIL
-echo -ne "${YELLOW}[6/8] Пароль админа: ${NC}"; read -s ADMIN_PASS; echo ""
-echo -ne "${YELLOW}[7/8] Порт панели [3000]: ${NC}"; read PANEL_PORT; PANEL_PORT=${PANEL_PORT:-3000}
-echo -ne "${YELLOW}[8/8] Порт подписки [4000]: ${NC}"; read SUB_PORT; SUB_PORT=${SUB_PORT:-4000}
-
-# Секреты
-JWT_SECRET=$(openssl rand -base64 48 | tr -d '\n')
-NODE_SECRET=$(openssl rand -base64 32 | tr -d '\n')
-SUB_TOKEN=$(openssl rand -hex 16)
-DB_PASS=$(openssl rand -base64 24 | tr -d '\n')
-
-echo -e "\n${YELLOW}Начать? [y/N]: ${NC}"; read CONFIRM
-[[ ! "$CONFIRM" =~ ^[Yy]$ ]] && exit 0
-
-# --- Жёсткое освобождение портов 80/443 ---
-echo -e "${BLUE}[0] Освобождение портов 80/443...${NC}"
-systemctl stop nginx apache2 httpd 2>/dev/null || true
-systemctl disable nginx apache2 httpd 2>/dev/null || true
-fuser -k 80/tcp 2>/dev/null || true
-fuser -k 443/tcp 2>/dev/null || true
-sleep 2
-
-# --- Установка Docker ---
-echo -e "${BLUE}[1] Docker...${NC}"
-command -v docker || curl -fsSL https://get.docker.com | sh
-
-BASE_DIR="/opt/remnawave"
-mkdir -p "$BASE_DIR"/{panel,node,sub,caddy,nginx}
-
-# --- Конфиги (аналогичные, но с сетью) ---
-cat > "$BASE_DIR/panel/.env" << EOF
-JWT_SECRET=$JWT_SECRET
-DATABASE_URL=postgresql://remnawave:$DB_PASS@remnawave-db:5432/remnawave
-NODE_SECRET=$NODE_SECRET
-SUBSCRIPTION_TOKEN=$SUB_TOKEN
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD=$ADMIN_PASS
+4. Установка Nginx и подготовка origin-сервера
+На сервере origin должны работать: Nginx на 80/443, сайт-заглушка для DOMAIN_1, certbot-сертификат для
+DOMAIN_1 и Xray inbound на локальном порту 127.0.0.1:2090.
+4.1. Установка пакетов на Ubuntu
+sudo apt update
+sudo apt install -y nginx certbot python3-certbot-nginx curl dnsutils
+sudo systemctl enable --now nginx
+sudo systemctl status nginx --no-pager
+4.2. Проверка текущих конфигов Nginx
+sudo nginx -t
+sudo nginx -T | less
+sudo nginx -T | grep -nE "server_name|DOMAIN_1|DOMAIN_2|api/v1/sync|proxy_pass|2090" -C 4
+sudo ss -lntp | grep -E ':80|:443|:2090'
+4.3. Выпуск сертификата для DOMAIN_1 на origin
+DNS для DOMAIN_1 должен указывать A-записью на SERVER_IP. Это сертификат для участка Yandex CDN ->
+origin.
+# DNS должен быть примерно таким:
+# DOMAIN_1. A SERVER_IP
+dig +short DOMAIN_1 @1.1.1.1
+# Выпуск через nginx-плагин
+sudo certbot --nginx -d DOMAIN_1
+# Альтернатива, если нужно standalone:
+# sudo systemctl stop nginx
+# sudo certbot certonly --standalone -d DOMAIN_1
+# sudo systemctl start nginx
+4.4. Создание сайта-заглушки для DOMAIN_1
+sudo mkdir -p /var/www/DOMAIN_1
+sudo tee /var/www/DOMAIN_1/index.html > /dev/null <<'EOF'
+<!doctype html>
+<html lang="en">
+<head>
+ <meta charset="utf-8">
+ <meta name="viewport" content="width=device-width, initial-scale=1">
+ <title>Service Portal</title>
+ <style>
+ body { font-family: Arial, sans-serif; background:#0f172a; color:#e5e7eb; margin:0; }
+ .wrap { max-width: 760px; margin: 12vh auto; padding: 32px; }
+ .card { background:#111827; border:1px solid #374151; border-radius:16px; padding:28px; }
+ input, button { padding:12px; border-radius:8px; border:1px solid #4b5563; margin:6px 0; }
+ input { width:100%; background:#030712; color:#e5e7eb; }
+ button { background:#2563eb; color:white; cursor:pointer; }
+ </style>
+</head>
+<body>
+ <div class="wrap"><div class="card">
+ <h1>Service Portal</h1>
+ <p>Sign in to continue.</p>
+ <form action="/login" method="post">
+ <input name="user" placeholder="Username">
+ <input name="password" placeholder="Password" type="password">
+ <button type="submit">Sign in</button>
+ </form>
+ </div></div>
+</body>
+</html>
 EOF
-
-cat > "$BASE_DIR/panel/docker-compose.yml" << EOF
-services:
-  remnawave-db:
-    image: postgres:17
-    container_name: remnawave-db
-    restart: always
-    environment:
-      POSTGRES_USER: remnawave
-      POSTGRES_PASSWORD: $DB_PASS
-      POSTGRES_DB: remnawave
-    ports: ['127.0.0.1:6767:5432']
-    volumes: [remnawave-db-data:/var/lib/postgresql/data]
-    networks: [remnawave-network]
-    healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U remnawave -d remnawave']
-      interval: 3s; timeout: 10s; retries: 5
-
-  remnawave-redis:
-    image: valkey/valkey:8.0.2-alpine
-    container_name: remnawave-redis
-    restart: always
-    networks: [remnawave-network]
-    volumes: [remnawave-redis-data:/data]
-    healthcheck:
-      test: ['CMD', 'valkey-cli', 'ping']
-      interval: 3s; timeout: 10s; retries: 5
-
-  remnawave:
-    image: remnawave/backend:latest
-    container_name: remnawave
-    restart: always
-    ports: ['127.0.0.1:$PANEL_PORT:3000']
-    env_file: [.env]
-    networks: [remnawave-network]
-    depends_on:
-      remnawave-db: { condition: service_healthy }
-      remnawave-redis: { condition: service_healthy }
-
-networks:
-  remnawave-network: { name: remnawave-network, driver: bridge }
-volumes:
-  remnawave-db-data:
-  remnawave-redis-data:
-EOF
-
-cat > "$BASE_DIR/sub/docker-compose.yml" << EOF
-services:
-  remnawave-sub:
-    image: remnawave/subscription-page:latest
-    container_name: remnawave-sub
-    restart: always
-    environment:
-      PANEL_URL: https://$PANEL_DOMAIN
-      SUB_TOKEN: $SUB_TOKEN
-      PORT: $SUB_PORT
-    ports: ['127.0.0.1:$SUB_PORT:$SUB_PORT']
-    networks: [remnawave-network]
-networks:
-  remnawave-network: { external: true, name: remnawave-network }
-EOF
-
-if $INSTALL_NODE; then
-    cat > "$BASE_DIR/node/docker-compose.yml" << EOF
-services:
-  remnawave-node:
-    image: remnawave/node:latest
-    container_name: remnawave-node
-    restart: always
-    environment:
-      PANEL_DOMAIN: $PANEL_DOMAIN
-      NODE_SECRET: $NODE_SECRET
-      NODE_PORT: '443'
-      SSL_MODE: auto
-    network_mode: host
-    privileged: true
-    volumes: ['/var/run/docker.sock:/var/run/docker.sock']
-EOF
-fi
-
-if [[ "$PROXY" == "caddy" ]]; then
-    cat > "$BASE_DIR/caddy/Caddyfile" << EOF
-{ email $EMAIL; admin off }
-$PANEL_DOMAIN { reverse_proxy 127.0.0.1:$PANEL_PORT }
-$SUB_DOMAIN { reverse_proxy 127.0.0.1:$SUB_PORT }
-EOF
-    cat > "$BASE_DIR/caddy/docker-compose.yml" << EOF
-services:
-  caddy:
-    image: caddy:2-alpine
-    container_name: remnawave-caddy
-    restart: unless-stopped
-    network_mode: host
-    volumes: [./Caddyfile:/etc/caddy/Caddyfile:ro, caddy_data:/data, caddy_config:/config]
-volumes:
-  caddy_data:; caddy_config:
-EOF
-else
-    # ... nginx конфиг (аналогичен предыдущему ответу, опускаю для краткости, вы его знаете)
-    echo "Nginx config omitted for brevity"
-fi
-
-# --- Запуск ---
-cd "$BASE_DIR/panel" && docker compose up -d
-echo -e "${YELLOW}Ждём 25 секунд, пока БД и Redis станут здоровы...${NC}"
-sleep 25
-
-cd "$BASE_DIR/sub" && docker compose up -d
-$INSTALL_NODE && cd "$BASE_DIR/node" && docker compose up -d
-
-cd "$BASE_DIR/$PROXY" && docker compose up -d
-
-# Проверка, что Caddy/Nginx слушает порты
-sleep 5
-if ! ss -tlnp | grep -qE ':(80|443)\s'; then
-    echo -e "${RED}⚠ Прокси не слушает порты! Проверьте логи: docker logs remnawave-$PROXY${NC}"
-fi
-
-# Вывод инфы (сокращён)
-echo -e "\n${GREEN}Готово! Панель: https://$PANEL_DOMAIN${NC}"
-echo -e "Логин: admin, Пароль: $ADMIN_PASS"
+sudo chown -R www-data:www-data /var/www/DOMAIN_1
+5. Конфигурация Nginx для DOMAIN_1
+Создайте отдельный vhost под DOMAIN_1. Он отдает заглушку на обычные URL и проксирует /api/v1/sync в
+локальный Xray inbound.
+sudo nano /etc/nginx/sites-available/DOMAIN_1
+server {
+ listen 80;
+ listen [::]:80;
+ server_name DOMAIN_1;
+ return 301 https://$host$request_uri;
+}
+server {
+ listen 443 ssl;
+ listen [::]:443 ssl;
+ server_name DOMAIN_1;
+ ssl_certificate /etc/letsencrypt/live/DOMAIN_1/fullchain.pem;
+ ssl_certificate_key /etc/letsencrypt/live/DOMAIN_1/privkey.pem;
+ ssl_protocols TLSv1.2 TLSv1.3;
+ root /var/www/DOMAIN_1;
+ index index.html;
+ location = / {
+ try_files /index.html =404;
+ }
+ location = /login {
+ default_type application/json;
+ add_header Cache-Control "no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0"
+always;
+ return 401 '{"status":"error","message":"Invalid username or password"}';
+ }
+ location = /favicon.ico {
+ return 204;
+ }
+ location = /robots.txt {
+ default_type text/plain;
+ return 200 "User-agent: *\nDisallow:\n";
+ }
+ location = /debug-xhttp {
+ default_type text/plain;
+ return 200 "host=$host
+http_host=$http_host
+method=$request_method
+uri=$request_uri
+x_forwarded_proto=$http_x_forwarded_proto
+user_agent=$http_user_agent
+";
+ }
+ location = /api/v1/sync {
+ proxy_pass http://127.0.0.1:2090;
+ proxy_http_version 1.1;
+ proxy_set_header Host DOMAIN_1;
+ proxy_set_header X-Real-IP $remote_addr;
+ proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+ proxy_set_header X-Forwarded-Proto https;
+ proxy_buffering off;
+ proxy_request_buffering off;
+ proxy_cache off;
+ proxy_read_timeout 3600s;
+ proxy_send_timeout 3600s;
+ client_max_body_size 0;
+ }
+ location ^~ /api/v1/sync/ {
+ proxy_pass http://127.0.0.1:2090;
+ proxy_http_version 1.1;
+ proxy_set_header Host DOMAIN_1;
+ proxy_set_header X-Real-IP $remote_addr;
+ proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+ proxy_set_header X-Forwarded-Proto https;
+ proxy_buffering off;
+ proxy_request_buffering off;
+ proxy_cache off;
+ proxy_read_timeout 3600s;
+ proxy_send_timeout 3600s;
+ client_max_body_size 0;
+ }
+ location / {
+ try_files $uri $uri/ /index.html;
+ }
+}
+5.1. Включение vhost и reload
+sudo ln -s /etc/nginx/sites-available/DOMAIN_1 /etc/nginx/sites-enabled/DOMAIN_1
+sudo nginx -t
+sudo systemctl reload nginx
+5.2. Если копируете существующую заглушку
+sudo mkdir -p /var/www/DOMAIN_1
